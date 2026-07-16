@@ -83,7 +83,12 @@ def _loose_file_name(global_index: int, entry: ForgeEntry) -> str:
 
 
 def _read_entry_info(f: BinaryIO, entry: ForgeEntry, legacy: bool) -> None:
-    entry.length_on_disk = _i32(f)
+    # Info record carries its own copy of length_on_disk, but it can disagree
+    # with the offset/id/length triplet's copy (observed 19 bytes short on a
+    # real ACB entry, silently truncating the extracted payload). The triplet
+    # copy is the one read_fileset actually slices the payload with, so it
+    # must win -- discard this copy rather than overwrite entry.length_on_disk.
+    _i32(f)
     entry.umac_hash = _u64(f)
     entry.engine_version = _i32(f)
     entry.extension = _u32(f)
