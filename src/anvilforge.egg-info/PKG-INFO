@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: anvilforge
+Version: 0.1.0
+Summary: Python rewrite of AnvilToolkit's .forge container unpack/repack for Assassin's Creed Brotherhood, Revelations, III and IV
+Requires-Python: >=3.10
+Requires-Dist: zstandard>=0.21

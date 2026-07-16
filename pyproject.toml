@@ -1,0 +1,18 @@
+[project]
+name = "anvilforge"
+version = "0.1.0"
+description = "Python rewrite of AnvilToolkit's .forge container unpack/repack for Assassin's Creed Brotherhood, Revelations, III and IV"
+requires-python = ">=3.10"
+dependencies = [
+    "zstandard>=0.21",
+]
+
+[project.scripts]
+anvilforge = "anvilforge.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,2 @@
+[console_scripts]
+anvilforge = anvilforge.cli:main
