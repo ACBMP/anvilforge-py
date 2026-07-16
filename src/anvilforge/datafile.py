@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import io
 import os
+import xml.etree.ElementTree as ET
 import zlib
 from dataclasses import dataclass, field
 from typing import BinaryIO
@@ -50,6 +51,8 @@ from .binio import (
     write_string32,
 )
 from .games import Game, is_legacy
+from .objectxml import read_object_xml, write_object_xml
+from .schema import Schema
 from .sanitize import sanitize_entry_name
 
 DATA_MAGIC = 1154322941026740787
@@ -92,8 +95,19 @@ ANVIL_EXTENSIONS: dict[int, str] = {
 }
 
 
-def resolve_extension(ext_code: int) -> str:
-    """Port of HashedData.GetHashedString (minus the un-ported hashes.hl)."""
+def resolve_extension(ext_code: int, schema: Schema | None = None) -> str:
+    """Port of HashedData.GetHashedString (minus the un-ported hashes.hl),
+    extended with an optional schema.Schema fallback: a sub-entry's
+    extension code is the same type-name hash used throughout schema.py
+    (confirmed empirically -- see objectxml.py), and a real .schema file's
+    own name dictionary is far larger (thousands of entries) than this
+    module's ~20-entry hardcoded table, so pass one in to get real type
+    names (e.g. "Entity") instead of numeric fallback codes for almost
+    every sub-entry."""
+    if schema is not None:
+        name = schema.names.get(ext_code)
+        if name is not None:
+            return name
     return ANVIL_EXTENSIONS.get(ext_code, str(ext_code))
 
 
@@ -305,8 +319,16 @@ def _derive_uid_and_ext(raw: bytes, legacy: bool) -> tuple[int, int]:
     return uid, ext
 
 
-def _read_content_records(data: bytes, start_index: int, out_dir: str) -> int:
-    """Port of the per-DataEntry sub-file extraction loop in Deserialize."""
+def _read_content_records(
+    data: bytes, start_index: int, out_dir: str, legacy: bool, schema: Schema | None
+) -> int:
+    """Port of the per-DataEntry sub-file extraction loop in Deserialize.
+
+    When `schema` is given, each sub-entry also gets a best-effort XML
+    conversion (see objectxml.py) written alongside its raw payload as
+    `{fname}.xml` -- additive, never in place of the raw file, so the
+    existing raw-file repack path (and its round-trip fidelity) is
+    unaffected whether or not a schema is supplied."""
     buf = io.BytesIO(data)
     length = len(data)
     index = start_index
@@ -318,10 +340,13 @@ def _read_content_records(data: bytes, start_index: int, out_dir: str) -> int:
         peek_pos = buf.tell()
         size += _extra_from_header(data[peek_pos : peek_pos + 8])
         payload = buf.read(size)
-        ext = resolve_extension(ext_code)
+        ext = resolve_extension(ext_code, schema)
         fname = f"{index}_-_{name}.{ext}"
-        with open(os.path.join(out_dir, fname), "wb") as out:
+        full_path = os.path.join(out_dir, fname)
+        with open(full_path, "wb") as out:
             out.write(payload)
+        if schema is not None:
+            write_object_xml(payload, schema, legacy, full_path + ".xml")
         index += 1
     return index
 
@@ -383,11 +408,18 @@ def _build_toc(entries: list[tuple[int, int]], legacy: bool) -> bytes:
 # --------------------------------------------------------------- top level --
 
 
-def unpack_datafile(data_path: str, out_dir: str, game: Game) -> None:
+def unpack_datafile(data_path: str, out_dir: str, game: Game, schema: Schema | None = None) -> None:
     """Unpacks one loose `.data` entry (already extracted from a .forge by
     forge.unpack) into its named sub-parts, plus a `.Dependency` sidecar if
-    the file carries dependency info."""
+    the file carries dependency info.
+
+    `schema` is optional (see resolve_extension and _read_content_records):
+    without it, this behaves exactly as before (numeric-fallback
+    extensions, raw sub-parts only). With a matching schema.Schema for
+    `game` loaded, sub-parts get real extension names and a best-effort XML
+    conversion alongside each raw sub-part."""
     os.makedirs(out_dir, exist_ok=True)
+    legacy = is_legacy(game)
     with open(data_path, "rb") as f:
         end = f.seek(0, 2)
         f.seek(0)
@@ -401,25 +433,83 @@ def unpack_datafile(data_path: str, out_dir: str, game: Game) -> None:
                 break
             blob = _read_block_set(f)
             if not first_block:
-                index = _read_content_records(blob, index, out_dir)
+                index = _read_content_records(blob, index, out_dir, legacy, schema)
             first_block = False
 
     base = os.path.splitext(os.path.basename(data_path))[0]
     _write_dependency_sidecar(os.path.join(out_dir, f"{base}.Dependency"), deps, raw_dep)
 
 
+def _sync_xml_siblings(in_dir: str, game: Game) -> None:
+    """Re-encodes every `{raw_name}.xml` in `in_dir` (objectxml.py) back to
+    binary and overwrites `raw_name` (the exact sibling unpack_datafile's
+    `schema` option writes it next to -- see _read_content_records) with
+    the result. A no-op whenever there are no `.xml` files, so calling this
+    unconditionally at the top of repack_datafile is free for a folder that
+    was never touched by the `schema` option. Encoding needs no schema
+    itself -- see objectxml.encode_object -- only the same 4-vs-8-byte ID
+    width already implied by `game`."""
+    legacy = is_legacy(game)
+    for name in os.listdir(in_dir):
+        if not name.endswith(".xml"):
+            continue
+        sibling_path = os.path.join(in_dir, name[: -len(".xml")])
+        if not os.path.isfile(sibling_path):
+            continue
+        raw = read_object_xml(os.path.join(in_dir, name), legacy)
+        with open(sibling_path, "wb") as f:
+            f.write(raw)
+
+
+def _xml_sidecar_names(in_dir: str) -> set[str]:
+    """Every sidecar filename (e.g. a `.dds`) referenced by a `File=`
+    attribute in any `.xml` file in `in_dir` (see objectxml._externalize_
+    raw_tails). These live next to the loose sub-parts but aren't
+    themselves one -- repack_datafile's raw-entry scan has to exclude them
+    the same way it excludes `.xml`/`.dependency`, or it'll try to parse an
+    image file as a schema object."""
+    names: set[str] = set()
+    for name in os.listdir(in_dir):
+        if not name.endswith(".xml"):
+            continue
+        try:
+            tree = ET.parse(os.path.join(in_dir, name))
+        except ET.ParseError:
+            continue
+        for el in tree.getroot().iter("RawTail"):
+            file_name = el.get("File")
+            if file_name:
+                names.add(file_name)
+    return names
+
+
 def repack_datafile(in_dir: str, data_path: str, game: Game) -> None:
     """Builds a `.data` file from a folder of its named sub-parts (as produced
     by unpack_datafile), deriving each sub-part's ID/extension from its own
-    content, matching the original tool's from-a-folder repack."""
+    content, matching the original tool's from-a-folder repack.
+
+    `.xml` files (as written by unpack_datafile's `schema` option) and their
+    sidecars are not themselves loose sub-parts -- see _sync_xml_siblings,
+    which regenerates each `.xml`'s raw sibling from its current (possibly
+    hand-edited) content before the scan below runs, so XML edits make it
+    into the repacked `.data` without needing any changes to the raw-file
+    pipeline itself."""
     version, algorithm, block_size = DATA_VERSIONS[game]
+
+    _sync_xml_siblings(in_dir, game)
+    excluded = _xml_sidecar_names(in_dir)
 
     deps: list[Dependency] = []
     raw_dep = b""
     names = []
     for name in os.listdir(in_dir):
-        if os.path.splitext(name)[1].lower() == ".dependency":
+        if name in excluded:
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext == ".dependency":
             deps, raw_dep = _read_dependency_sidecar(os.path.join(in_dir, name))
+        elif ext == ".xml":
+            continue
         else:
             names.append(name)
     names.sort(key=leading_index)

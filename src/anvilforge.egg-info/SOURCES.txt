@@ -10,7 +10,9 @@ src/anvilforge/entry.py
 src/anvilforge/fileset.py
 src/anvilforge/forge.py
 src/anvilforge/games.py
+src/anvilforge/objectxml.py
 src/anvilforge/sanitize.py
+src/anvilforge/schema.py
 src/anvilforge.egg-info/PKG-INFO
 src/anvilforge.egg-info/SOURCES.txt
 src/anvilforge.egg-info/dependency_links.txt
@@ -19,3 +21,4 @@ src/anvilforge.egg-info/requires.txt
 src/anvilforge.egg-info/top_level.txt
 tests/test_real_acb_samples.py
 tests/test_real_datafile_samples.py
+tests/test_real_object_xml_samples.py
