@@ -14,7 +14,10 @@ from anvilforge.datafile import repack_datafile, unpack_datafile
 from anvilforge.forge import unpack
 from anvilforge.games import Game
 
-SAMPLE_DIR = "/home/patrick/Music/ACB/multi"
+SAMPLE_DIR = (
+    "/home/a/Games/assassins-creed-brotherhood/drive_c/Program Files (x86)/Ubisoft/"
+    "Ubisoft Game Launcher/games/Assassin's Creed Brotherhood/multi"
+)
 SAMPLES = [
     "DataPC_extraparams.forge",
     "DataPC_Fire.forge",

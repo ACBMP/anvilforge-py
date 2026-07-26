@@ -1,6 +1,6 @@
-"""Parser for the SCHM reflection-schema files under ./schema/ (one per
-game's multiplayer content: AC3_MP.schema, AC4_MP.schema, ACB_MP.schema,
-ACR_MP.schema).
+"""Parser for the SCHM reflection-schema files bundled under
+anvilforge/schemas/ (one per game's multiplayer content: AC3_MP.schema,
+AC4_MP.schema, ACB_MP.schema, ACR_MP.schema).
 
 These describe the property layout of every AnvilNext engine object type
 (Entity, Material, TextureMap, ...) so that the binary blobs unpacked from a
@@ -25,7 +25,11 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass, field
 from enum import IntEnum
+from functools import lru_cache
+from importlib import resources
 from typing import BinaryIO
+
+from .games import Game, SCHEMA_NAMES
 
 SCHM_MAGIC = 0x4D484353  # b"SCHM"
 
@@ -310,3 +314,17 @@ class Schema:
             names[h] = _read_cstring(buf)
 
         return cls(game_info, types, global_enums, names)
+
+    @classmethod
+    def load_default(cls, game: Game) -> "Schema":
+        """Loads the .schema file bundled with this package for `game`,
+        so callers no longer need to track down and pass a matching
+        .schema file by hand."""
+        return _load_bundled(SCHEMA_NAMES[game])
+
+
+@lru_cache(maxsize=None)
+def _load_bundled(name: str) -> Schema:
+    ref = resources.files("anvilforge") / "schemas" / f"{name}.schema"
+    with resources.as_file(ref) as path:
+        return Schema.load(path)

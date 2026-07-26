@@ -30,6 +30,16 @@ LEGACY_GAMES: frozenset[Game] = frozenset({Game.BROTHERHOOD, Game.REVELATIONS})
 # this many, mirroring the original tool's hardcoded 5000.
 ENTRIES_PER_FILESET = 5000
 
+# Bundled schema/*.schema filename (minus extension) matching each game --
+# see schema.py's load_default, which loads these straight out of the
+# installed package so callers no longer need to pass --schema by hand.
+SCHEMA_NAMES: dict[Game, str] = {
+    Game.BROTHERHOOD: "ACB_MP",
+    Game.REVELATIONS: "ACR_MP",
+    Game.AC3: "AC3_MP",
+    Game.BLACK_FLAG: "AC4_MP",
+}
+
 GAME_EXECUTABLES: dict[str, Game] = {
     "acbmp.exe": Game.BROTHERHOOD,
     "acbsp.exe": Game.BROTHERHOOD,

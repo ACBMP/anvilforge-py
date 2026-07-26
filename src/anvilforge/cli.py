@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .datafile import repack_datafile, unpack_datafile
 from .forge import backup, repack, unpack
@@ -52,9 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     p_unpack_data.add_argument(
         "--schema",
         metavar="SCHEMA_FILE",
-        help="a matching .schema file (see ./schema/) -- when given, sub-parts get real "
-        "extension names plus a best-effort XML conversion (with image sidecars for "
+        help="a .schema file to use instead of the one bundled for --game -- sub-parts get "
+        "real extension names plus a best-effort XML conversion (with image sidecars for "
         "recognized textures) alongside each raw sub-part; see objectxml.py",
+    )
+    p_unpack_data.add_argument(
+        "--raw",
+        action="store_true",
+        help="skip schema-based extension/XML resolution and dump sub-parts as-is",
     )
 
     p_repack_data = sub.add_parser(
@@ -69,7 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_obj_to_xml.add_argument("object_file")
     p_obj_to_xml.add_argument("xml_file")
-    p_obj_to_xml.add_argument("--schema", metavar="SCHEMA_FILE", required=True)
+    p_obj_to_xml.add_argument(
+        "--schema",
+        metavar="SCHEMA_FILE",
+        help="a .schema file to use instead of the one bundled for --game",
+    )
     _add_game_arg(p_obj_to_xml)
 
     p_xml_to_obj = sub.add_parser(
@@ -86,22 +96,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.backup:
             dest = backup(args.forge_file)
             print(f"Backed up to {dest}")
-        entries = unpack(args.forge_file, args.out_dir, game)
-        print(f"Unpacked {len(entries)} entries to {args.out_dir}")
+        out_dir = Path(args.out_dir) / Path(args.forge_file).stem
+        entries = unpack(args.forge_file, str(out_dir), game)
+        print(f"Unpacked {len(entries)} entries to {out_dir}")
     elif args.command == "repack":
         repack(args.in_dir, args.forge_file, game)
         print(f"Wrote {args.forge_file}")
     elif args.command == "unpack-data":
-        schema = Schema.load(args.schema) if args.schema else None
-        unpack_datafile(args.data_file, args.out_dir, game, schema=schema)
-        print(f"Unpacked {args.data_file} to {args.out_dir}")
+        if args.raw:
+            schema = None
+        elif args.schema:
+            schema = Schema.load(args.schema)
+        else:
+            schema = Schema.load_default(game)
+        out_dir = Path(args.out_dir) / Path(args.data_file).stem
+        unpack_datafile(args.data_file, str(out_dir), game, schema=schema)
+        print(f"Unpacked {args.data_file} to {out_dir}")
     elif args.command == "repack-data":
         repack_datafile(args.in_dir, args.data_file, game)
         print(f"Wrote {args.data_file}")
     elif args.command == "object-to-xml":
         with open(args.object_file, "rb") as f:
             data = f.read()
-        schema = Schema.load(args.schema)
+        schema = Schema.load(args.schema) if args.schema else Schema.load_default(game)
         written = write_object_xml(data, schema, is_legacy(game), args.xml_file)
         print(f"Wrote {args.xml_file}" + (f" (+ {len(written)} sidecar file(s))" if written else ""))
     elif args.command == "xml-to-object":

@@ -16,14 +16,19 @@ from anvilforge.games import Game
 from anvilforge.objectxml import encode_object, decode_object, read_object_xml
 from anvilforge.schema import Schema
 
-SAMPLE_DIR = "/home/patrick/Music/ACB/multi"
+SAMPLE_DIR = (
+    "/home/a/Games/assassins-creed-brotherhood/drive_c/Program Files (x86)/Ubisoft/"
+    "Ubisoft Game Launcher/games/Assassin's Creed Brotherhood/multi"
+)
 SAMPLES = [
     "DataPC_extraparams.forge",
     "DataPC_Fire.forge",
     "DataPC_skins_0000_00000001_dlc.forge",
     "DataPC_skins_0001_00000002_dlc.forge",
 ]
-SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "schema", "ACB_MP.schema")
+SCHEMA_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "src", "anvilforge", "schemas", "ACB_MP.schema"
+)
 
 pytestmark = pytest.mark.skipif(
     not os.path.isdir(SAMPLE_DIR), reason="real ACB MP sample forges not available"

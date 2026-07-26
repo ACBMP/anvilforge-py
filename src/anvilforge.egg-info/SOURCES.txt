@@ -1,3 +1,4 @@
+MANIFEST.in
 pyproject.toml
 src/anvilforge/__init__.py
 src/anvilforge/binio.py
@@ -19,6 +20,10 @@ src/anvilforge.egg-info/dependency_links.txt
 src/anvilforge.egg-info/entry_points.txt
 src/anvilforge.egg-info/requires.txt
 src/anvilforge.egg-info/top_level.txt
+src/anvilforge/schemas/AC3_MP.schema
+src/anvilforge/schemas/AC4_MP.schema
+src/anvilforge/schemas/ACB_MP.schema
+src/anvilforge/schemas/ACR_MP.schema
 tests/test_real_acb_samples.py
 tests/test_real_datafile_samples.py
 tests/test_real_object_xml_samples.py
