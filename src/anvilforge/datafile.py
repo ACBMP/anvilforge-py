@@ -40,7 +40,7 @@ import os
 import xml.etree.ElementTree as ET
 import zlib
 from dataclasses import dataclass, field
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 from . import compression
 from .binio import (
@@ -306,7 +306,7 @@ def _extra_from_header(peek: bytes) -> int:
     return 0
 
 
-def _derive_uid_and_ext(raw: bytes, legacy: bool) -> tuple[int, int]:
+def derive_uid_and_ext(raw: bytes, legacy: bool) -> tuple[int, int]:
     """Port of the uID/extension recovery in DataFile.Serialize's per-loose-
     file read (the DataFile-internal analogue of create_entry.py's
     ID/Extension derivation, one nesting level shallower since these
@@ -319,16 +319,40 @@ def _derive_uid_and_ext(raw: bytes, legacy: bool) -> tuple[int, int]:
     return uid, ext
 
 
-def _read_content_records(
-    data: bytes, start_index: int, out_dir: str, legacy: bool, schema: Schema | None
-) -> int:
-    """Port of the per-DataEntry sub-file extraction loop in Deserialize.
+def object_id_bytes(raw: bytes, legacy: bool) -> bytes:
+    """The raw bytes of a root object's own ID field, same header layout as
+    derive_uid_and_ext -- used by replace.py to preserve a sub-part's own
+    identity when its content is overwritten by a *different* instance's
+    (e.g. the same FX/template asset duplicated across many .data entries,
+    each with its own distinct ID that other objects in that .data may
+    reference; blindly cloning a donor instance's ID into every target
+    breaks those references even though the content itself round-trips
+    fine -- this was the actual cause of a real, reported game crash)."""
+    extra = _extra_from_header(raw[:8])
+    id_width = 4 if legacy else 8
+    start = extra + 2
+    return raw[start : start + id_width]
 
-    When `schema` is given, each sub-entry also gets a best-effort XML
-    conversion (see objectxml.py) written alongside its raw payload as
-    `{fname}.xml` -- additive, never in place of the raw file, so the
-    existing raw-file repack path (and its round-trip fidelity) is
-    unaffected whether or not a schema is supplied."""
+
+def splice_object_id(raw: bytes, legacy: bool, new_id_bytes: bytes) -> bytes:
+    """Returns `raw` with its own ID field replaced by `new_id_bytes` --
+    computed against *this* payload's own extra/pre-header length, which
+    may differ from whatever payload `new_id_bytes` was taken from."""
+    extra = _extra_from_header(raw[:8])
+    id_width = 4 if legacy else 8
+    start = extra + 2
+    if len(new_id_bytes) != id_width:
+        raise ValueError(f"expected a {id_width}-byte ID, got {len(new_id_bytes)}")
+    return raw[:start] + new_id_bytes + raw[start + id_width :]
+
+
+def iter_content_records(data: bytes, start_index: int) -> Iterator[tuple[int, int, str, bytes]]:
+    """Port of the per-DataEntry sub-file parsing loop in Deserialize, minus
+    the disk write and extension/schema resolution: yields
+    (index, ext_code, name, payload) for every sub-part record in one
+    already-decompressed content blob. `unpack_datafile` (disk-writing,
+    optional XML sidecar) and search.py's index builder (in-memory only)
+    both build on this, so neither can structurally drift from the other."""
     buf = io.BytesIO(data)
     length = len(data)
     index = start_index
@@ -340,15 +364,34 @@ def _read_content_records(
         peek_pos = buf.tell()
         size += _extra_from_header(data[peek_pos : peek_pos + 8])
         payload = buf.read(size)
-        ext = resolve_extension(ext_code, schema)
-        fname = f"{index}_-_{name}.{ext}"
-        full_path = os.path.join(out_dir, fname)
-        with open(full_path, "wb") as out:
-            out.write(payload)
-        if schema is not None:
-            write_object_xml(payload, schema, legacy, full_path + ".xml")
+        yield index, ext_code, name, payload
         index += 1
-    return index
+
+
+def iter_datafile_subparts(f: BinaryIO, game: Game) -> Iterator[tuple[int, int, str, bytes]]:
+    """Port of the top-level per-DataEntry section loop in Deserialize (skip
+    inline deps, then loop magic-delimited block-sets, discarding the first
+    section unconditionally since it's always a Table of Contents nothing
+    ever reads back -- see module docstring): yields
+    (index, ext_code, name, payload) for every sub-part across every content
+    section, with zero disk I/O. `unpack_datafile` and search.py's index
+    builder both build on this exact structural walk."""
+    end = f.seek(0, 2)
+    f.seek(0)
+    _read_inline_dependencies(f, game)
+
+    index = 0
+    first_block = True
+    while end - f.tell() >= 8:
+        magic = _u64(f)
+        if magic != DATA_MAGIC:
+            break
+        blob = _read_block_set(f)
+        if not first_block:
+            for rec_index, ext_code, name, payload in iter_content_records(blob, index):
+                yield rec_index, ext_code, name, payload
+                index = rec_index + 1
+        first_block = False
 
 
 def _build_content_and_toc(paths: list[str], game: Game) -> tuple[bytes, bytes]:
@@ -363,7 +406,7 @@ def _build_content_and_toc(paths: list[str], game: Game) -> tuple[bytes, bytes]:
     for path in paths:
         with open(path, "rb") as fh:
             raw = fh.read()
-        uid, ext_code = _derive_uid_and_ext(raw, legacy)
+        uid, ext_code = derive_uid_and_ext(raw, legacy)
         if uid in seen_ids:
             continue
         seen_ids.add(uid)
@@ -408,33 +451,41 @@ def _build_toc(entries: list[tuple[int, int]], legacy: bool) -> bytes:
 # --------------------------------------------------------------- top level --
 
 
-def unpack_datafile(data_path: str, out_dir: str, game: Game, schema: Schema | None = None) -> None:
+def unpack_datafile(
+    data_path: str,
+    out_dir: str,
+    game: Game,
+    schema: Schema | None = None,
+    write_xml: bool = True,
+) -> None:
     """Unpacks one loose `.data` entry (already extracted from a .forge by
     forge.unpack) into its named sub-parts, plus a `.Dependency` sidecar if
     the file carries dependency info.
 
-    `schema` is optional (see resolve_extension and _read_content_records):
+    `schema` is optional (see resolve_extension and iter_datafile_subparts):
     without it, this behaves exactly as before (numeric-fallback
     extensions, raw sub-parts only). With a matching schema.Schema for
-    `game` loaded, sub-parts get real extension names and a best-effort XML
-    conversion alongside each raw sub-part."""
+    `game` loaded, sub-parts get real extension names and, if `write_xml`
+    (the default), a best-effort XML conversion alongside each raw
+    sub-part. `write_xml=False` keeps the schema-resolved extension names
+    without attempting the XML decode -- for types whose XML conversion
+    isn't reliable yet (see objectxml.py's module docstring on unconfirmed
+    constructs), this still gets real filenames with none of the decode
+    risk; see replace.py's `raw=True` mode, which needs exactly this."""
     os.makedirs(out_dir, exist_ok=True)
     legacy = is_legacy(game)
     with open(data_path, "rb") as f:
-        end = f.seek(0, 2)
+        for index, ext_code, name, payload in iter_datafile_subparts(f, game):
+            ext = resolve_extension(ext_code, schema)
+            fname = f"{index}_-_{name}.{ext}"
+            full_path = os.path.join(out_dir, fname)
+            with open(full_path, "wb") as out:
+                out.write(payload)
+            if schema is not None and write_xml:
+                write_object_xml(payload, schema, legacy, full_path + ".xml")
+
         f.seek(0)
         deps, raw_dep = _read_inline_dependencies(f, game)
-
-        index = 0
-        first_block = True
-        while end - f.tell() >= 8:
-            magic = _u64(f)
-            if magic != DATA_MAGIC:
-                break
-            blob = _read_block_set(f)
-            if not first_block:
-                index = _read_content_records(blob, index, out_dir, legacy, schema)
-            first_block = False
 
     base = os.path.splitext(os.path.basename(data_path))[0]
     _write_dependency_sidecar(os.path.join(out_dir, f"{base}.Dependency"), deps, raw_dep)
@@ -443,7 +494,7 @@ def unpack_datafile(data_path: str, out_dir: str, game: Game, schema: Schema | N
 def _sync_xml_siblings(in_dir: str, game: Game) -> None:
     """Re-encodes every `{raw_name}.xml` in `in_dir` (objectxml.py) back to
     binary and overwrites `raw_name` (the exact sibling unpack_datafile's
-    `schema` option writes it next to -- see _read_content_records) with
+    `schema` option writes it next to -- see iter_datafile_subparts) with
     the result. A no-op whenever there are no `.xml` files, so calling this
     unconditionally at the top of repack_datafile is free for a folder that
     was never touched by the `schema` option. Encoding needs no schema

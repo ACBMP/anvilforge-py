@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import io
 import os
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 from .binio import read_cstring, write_cstring, read_class_id, write_class_id
 from .entry import ForgeEntry, entry_size
@@ -71,7 +71,7 @@ def _name_suffix(name: str) -> str:
     return base[idx + 3 :]
 
 
-def _loose_file_name(global_index: int, entry: ForgeEntry) -> str:
+def loose_file_name(global_index: int, entry: ForgeEntry) -> str:
     """Port of FileSet.WriteFileToDisk's naming rule."""
     ext = ".data"
     if entry.id == 16:
@@ -109,13 +109,24 @@ def _read_entry_info(f: BinaryIO, entry: ForgeEntry, legacy: bool) -> None:
     entry.name = sanitize_entry_name(raw_name)
 
 
-def read_fileset(
-    f: BinaryIO, set_index: int, out_dir: str, legacy: bool
-) -> tuple[list[ForgeEntry], int]:
-    """Reads one FileSet, writing each entry's raw payload into out_dir.
+def iter_fileset_entries(f: BinaryIO, set_index: int, legacy: bool) -> Iterator[ForgeEntry]:
+    """Yields each entry in one FileSet's offset/id/length triplet + info
+    record (no payload read) -- the structural walk `read_fileset` and the
+    search indexer (search.py) both build on, so a payload-less scan (e.g.
+    to build a search index without unpacking anything to disk) can't drift
+    from what actually gets unpacked.
 
-    Returns (entries, next_fileset_offset) where next_fileset_offset is -1
-    when this was the last FileSet in the chain.
+    Mirrors `f.tell()` bookkeeping must survive across the `yield`: whatever
+    the caller does with the entry (e.g. read its payload, which seeks
+    elsewhere) is transient, so the seek back to `triplet_return_pos` runs
+    unconditionally right after each resume, before reading the next
+    triplet.
+
+    On exhaustion, returns (via StopIteration.value, PEP 380) the next
+    FileSet's absolute offset, or -1 if this was the last one in the chain
+    -- matching read_fileset's own second return value -- and leaves the
+    file cursor positioned there (or right after the last triplet read, if
+    -1) for a subsequent FileSet read.
     """
     length = _u32(f)
     f.read(4)  # FileSetsCount (set 0 only) or 0, unused
@@ -127,8 +138,6 @@ def read_fileset(
     f.read(8)  # data-region base value, unused
 
     esize = entry_size(legacy)
-    entries: list[ForgeEntry] = []
-    os.makedirs(out_dir, exist_ok=True)
 
     for index in range(length):
         entry = ForgeEntry()
@@ -141,21 +150,47 @@ def read_fileset(
         f.seek(info_table_start + index * esize)
         _read_entry_info(f, entry, legacy)
 
-        entries.append(entry)
-
-        f.seek(entry.offset + (LEGACY_DATA_HEADER_SIZE if legacy else 0))
-        data = f.read(entry.length_on_disk)
-
-        global_index = set_index * ENTRIES_PER_FILESET + index
-        path = os.path.join(out_dir, _loose_file_name(global_index, entry))
-        with open(path, "wb") as out:
-            out.write(data)
+        yield entry
 
         f.seek(triplet_return_pos)
 
-    if next_fileset_ptr == -1:
-        return entries, -1
-    f.seek(next_fileset_ptr)
+    if next_fileset_ptr != -1:
+        f.seek(next_fileset_ptr)
+    return next_fileset_ptr
+
+
+def read_entry_payload(f: BinaryIO, entry: ForgeEntry, legacy: bool) -> bytes:
+    """Reads one entry's raw payload bytes (the part `read_fileset` writes
+    straight to a loose file). Callers that only need structural metadata
+    (e.g. non-.data entries during a search-index scan) can skip this."""
+    f.seek(entry.offset + (LEGACY_DATA_HEADER_SIZE if legacy else 0))
+    return f.read(entry.length_on_disk)
+
+
+def read_fileset(
+    f: BinaryIO, set_index: int, out_dir: str, legacy: bool
+) -> tuple[list[ForgeEntry], int]:
+    """Reads one FileSet, writing each entry's raw payload into out_dir.
+
+    Returns (entries, next_fileset_offset) where next_fileset_offset is -1
+    when this was the last FileSet in the chain.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    entries: list[ForgeEntry] = []
+    gen = iter_fileset_entries(f, set_index, legacy)
+    next_fileset_ptr = -1
+    while True:
+        try:
+            entry = next(gen)
+        except StopIteration as stop:
+            next_fileset_ptr = stop.value if stop.value is not None else -1
+            break
+        entries.append(entry)
+        global_index = set_index * ENTRIES_PER_FILESET + len(entries) - 1
+        data = read_entry_payload(f, entry, legacy)
+        path = os.path.join(out_dir, loose_file_name(global_index, entry))
+        with open(path, "wb") as out:
+            out.write(data)
     return entries, next_fileset_ptr
 
 

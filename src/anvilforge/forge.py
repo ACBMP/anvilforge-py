@@ -48,7 +48,7 @@ def _write_u32(f: BinaryIO, v: int) -> None:
 # ----------------------------------------------------------------- unpack --
 
 
-def _read_header(f: BinaryIO, expected_version: int) -> int:
+def read_header(f: BinaryIO, expected_version: int) -> int:
     """Reads the common scimitar header, seeks to the first FileSet, and
     returns the FileSet count."""
     magic = read_cstring(f)
@@ -85,7 +85,7 @@ def unpack(forge_path: str, out_dir: str, game: Game) -> list[ForgeEntry]:
 
     entries: list[ForgeEntry] = []
     with open(forge_path, "rb") as f:
-        fileset_count = _read_header(f, version)
+        fileset_count = read_header(f, version)
         for set_index in range(fileset_count):
             set_entries, _next_ptr = read_fileset(f, set_index, out_dir, legacy)
             entries.extend(set_entries)
@@ -106,18 +106,48 @@ def backup(forge_path: str, backup_dir: str | None = None) -> str:
 # ------------------------------------------------------------------ repack --
 
 
-def _scan_entries(in_dir: str, game: Game, legacy: bool) -> list[ForgeEntry]:
+_PRESERVED_FIELDS = (
+    "umac_hash",
+    "extension",
+    "parent",
+    "revision_number_data",
+    "revision_number_attributes",
+    "metafile_key",
+    "timestamp",
+    "scc_status_data",
+    "scc_status_attributes",
+    "is_hidden",
+)
+
+
+def _scan_entries(
+    in_dir: str, game: Game, legacy: bool, original_entries: list[ForgeEntry] | None = None
+) -> list[ForgeEntry]:
     names = sorted(
         (n for n in os.listdir(in_dir) if os.path.splitext(n)[1].lower() in LOOSE_EXTENSIONS),
         key=leading_index,
     )
     timestamp = int(time.time())
+    original_by_id = {e.id: e for e in original_entries} if original_entries else {}
     seen_ids: set[int] = set()
     entries: list[ForgeEntry] = []
     for name in names:
         entry = create_entry(os.path.join(in_dir, name), timestamp, game)
         if entry is None or entry.id in seen_ids:
             continue
+        original = original_by_id.get(entry.id)
+        if original is not None:
+            # create_entry() re-derives these fresh every call -- umac_hash
+            # in particular is fnv64(loose file's *own transient disk
+            # path*), not anything content-stable, so it's effectively
+            # randomized on every repack unless restored here. Preserving
+            # them for entries that already existed is what makes a
+            # touch-almost-nothing round trip (repack.py's per-forge
+            # unpack->edit one sub-part->repack) safe against a real,
+            # live install instead of silently corrupting every other
+            # entry in the forge.
+            for field in _PRESERVED_FIELDS:
+                setattr(entry, field, getattr(original, field))
         if entries:
             prev = entries[-1]
             entry.offset = prev.offset + prev.length_on_disk
@@ -173,14 +203,26 @@ def _write_header_modern(bw: BinaryIO, entries_count: int, fileset_count: int) -
     _write_i64(bw, 1094)
 
 
-def repack(in_dir: str, forge_path: str, game: Game) -> None:
+def repack(
+    in_dir: str, forge_path: str, game: Game, original_entries: list[ForgeEntry] | None = None
+) -> None:
     """Builds a .forge file from a folder of loose .data/.MetaFile/.PrefetchInfo
     files, deriving each entry's ID/extension from its own content (matching
-    the original tool's from-a-folder repack, not a manifest)."""
+    the original tool's from-a-folder repack, not a manifest).
+
+    `original_entries` (typically whatever `unpack()` returned for this
+    exact forge) restores several per-entry metadata fields create_entry()
+    can't recover from a loose file alone (notably umac_hash, which is
+    otherwise derived from the loose file's own transient disk path and so
+    is effectively randomized on every repack -- see _scan_entries) for
+    every entry that already existed. Without this, replace.py's per-forge
+    round trip would silently reset that metadata for every entry in the
+    forge, not just the one it meant to touch -- confirmed to cause real,
+    in-game crashes even with zero content changes."""
     version = forge_version(game)
     legacy = is_legacy(game)
 
-    entries = _scan_entries(in_dir, game, legacy)
+    entries = _scan_entries(in_dir, game, legacy, original_entries)
     filesets = _chunk(entries)
 
     with open(forge_path, "wb") as bw:

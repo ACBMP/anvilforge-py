@@ -125,7 +125,7 @@ def _read_header(f: io.BytesIO, id_width: int) -> tuple[bytes, int, bytes]:
     """Reads one root object header: an optional, unparsed "import table"
     prefix (captured verbatim -- see PreHeader in write_object_xml), the
     fixed 2-byte marker, the object's ID, and its type-name hash. Mirrors
-    datafile._extra_from_header/_derive_uid_and_ext, which recover the same
+    datafile._extra_from_header/derive_uid_and_ext, which recover the same
     header for a different purpose (repack bookkeeping)."""
     start = f.tell()
     peek = f.read(8)

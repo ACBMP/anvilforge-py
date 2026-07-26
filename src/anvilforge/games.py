@@ -30,6 +30,15 @@ LEGACY_GAMES: frozenset[Game] = frozenset({Game.BROTHERHOOD, Game.REVELATIONS})
 # this many, mirroring the original tool's hardcoded 5000.
 ENTRIES_PER_FILESET = 5000
 
+# Short CLI --game code for each game (see cli.py's _GAME_CHOICES, derived
+# from this so the code<->Game mapping has one source of truth).
+GAME_CODES: dict[Game, str] = {
+    Game.BROTHERHOOD: "acb",
+    Game.REVELATIONS: "acr",
+    Game.AC3: "ac3",
+    Game.BLACK_FLAG: "ac4",
+}
+
 # Bundled schema/*.schema filename (minus extension) matching each game --
 # see schema.py's load_default, which loads these straight out of the
 # installed package so callers no longer need to pass --schema by hand.

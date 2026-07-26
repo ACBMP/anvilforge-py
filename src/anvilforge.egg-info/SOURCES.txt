@@ -12,8 +12,10 @@ src/anvilforge/fileset.py
 src/anvilforge/forge.py
 src/anvilforge/games.py
 src/anvilforge/objectxml.py
+src/anvilforge/replace.py
 src/anvilforge/sanitize.py
 src/anvilforge/schema.py
+src/anvilforge/search.py
 src/anvilforge.egg-info/PKG-INFO
 src/anvilforge.egg-info/SOURCES.txt
 src/anvilforge.egg-info/dependency_links.txt
@@ -24,6 +26,8 @@ src/anvilforge/schemas/AC3_MP.schema
 src/anvilforge/schemas/AC4_MP.schema
 src/anvilforge/schemas/ACB_MP.schema
 src/anvilforge/schemas/ACR_MP.schema
+tests/test_extract_replace.py
 tests/test_real_acb_samples.py
 tests/test_real_datafile_samples.py
 tests/test_real_object_xml_samples.py
+tests/test_search.py
