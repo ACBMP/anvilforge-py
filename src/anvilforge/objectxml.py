@@ -266,10 +266,30 @@ class _Decoder:
                 el.text = str(int.from_bytes(raw, "little"))
             return el
 
-        if kind in (Kind.OBJECT_ID, Kind.HANDLE):
+        if kind == Kind.OBJECT_ID:
             raw = f.read(self.id_width)
             if len(raw) < self.id_width:
                 raise DecodeError(f"truncated {_kind_name(kind)}")
+            el.set("ID", raw.hex())
+            return el
+
+        if kind == Kind.HANDLE:
+            # Confirmed against real content (TeamVIPNavflowPathNode.NavFlow,
+            # a HANDLE targeting Entity): a 1-byte tag (always seen as 0)
+            # precedes the id_width-byte ID -- without it, every HANDLE
+            # property is off by one byte, corrupting itself and everything
+            # after it. See schema.py's property table for this type: only
+            # tag 0 has been observed, so any other value is treated as
+            # unconfirmed territory rather than guessed at.
+            tag = f.read(1)
+            if not tag:
+                raise DecodeError("truncated handle tag")
+            if tag[0] != 0:
+                raise DecodeError(f"unrecognized handle tag {tag[0]}")
+            raw = f.read(self.id_width)
+            if len(raw) < self.id_width:
+                raise DecodeError("truncated HANDLE")
+            el.set("Tag", str(tag[0]))
             el.set("ID", raw.hex())
             return el
 
@@ -405,7 +425,12 @@ def _encode_value(buf: io.BytesIO, el: ET.Element, id_width: int) -> None:
             buf.write(int(el.text).to_bytes(PRIMITIVE_SIZE[kind], "little"))
         return
 
-    if kind in (Kind.OBJECT_ID, Kind.HANDLE):
+    if kind == Kind.OBJECT_ID:
+        buf.write(bytes.fromhex(el.get("ID")))
+        return
+
+    if kind == Kind.HANDLE:
+        buf.write(bytes([int(el.get("Tag"))]))
         buf.write(bytes.fromhex(el.get("ID")))
         return
 
