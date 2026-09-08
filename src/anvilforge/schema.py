@@ -214,7 +214,31 @@ def _read_type(f: BinaryIO) -> TypeDef:
     enum_count = _i32(f)
     properties = [Property(_u32(f), _u32(f), _u64(f)) for _ in range(prop_count)]
     enums = [_read_enum(f) for _ in range(enum_count)]
+    properties.extend(_SCHEMA_OMISSIONS.get(type_hash, ()))
     return TypeDef(type_hash, base_type_hash, flags, properties, enums)
+
+
+# ACB_MP.schema declares only 3 properties for TeamVIPNavflowPathNode (hash
+# 1105138129 / 0x41DF11D1) -- NavFlow (HANDLE), IsSpawnPoint (BOOL),
+# IsCheckpoint (BOOL), 14 bytes total -- but real retail
+# AdditionalWorldData_TeamVIP content (both ACB skins DLC forges,
+# DataPC_skins_0001_00000002_dlc.forge and DataPC_skins_0002_00000004_dlc.forge)
+# writes one more byte per node, always 0 or 1 (a real flag, not padding).
+# Confirmed empirically against a real object (San Donato's
+# AdditionalWorldData_TeamVIP, GUID 000000004FD988E6): scanning every raw
+# occurrence of this type's header bytes lands on a fixed 15-byte stride for
+# every node within a path (76/79 consecutive gaps in one sample; the other
+# 3 are the expected jump to the next TeamVIPNavflowPath's own header +
+# length prefix) only once this trailing bool is counted -- without it,
+# every node after a path's first desyncs the rest of that path's array
+# (and, once repeated across a path boundary, the whole object). The real
+# property name isn't recoverable -- it's absent from the schema's own name
+# dictionary too, so there's no candidate hash to confirm against -- so it's
+# appended unnamed (name_hash 0, resolves to "0x00000000" like any other
+# unresolved hash).
+_SCHEMA_OMISSIONS: dict[int, list[Property]] = {
+    1105138129: [Property(flags=33554433, name_hash=0, packed_type=0)],
+}
 
 
 class Schema:
