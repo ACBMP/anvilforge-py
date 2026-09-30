@@ -315,6 +315,32 @@ class Schema:
 
         return cls(game_info, types, global_enums, names)
 
+    def with_placeholders_filled(self, donor: "Schema") -> "Schema":
+        """Returns a copy of this schema in which every type carrying a
+        nameless placeholder property (name hash 0) is replaced by `donor`'s
+        definition of that type, plus every donor-only type they may
+        reference.
+
+        ACB_MP.schema has such placeholders exactly where the shipped ACBMP
+        binary serializes a field the schema dump lost (e.g.
+        CrowdFraction.CrowdFractionName: ac2::CrowdFraction::FastLoad reads a
+        string there). ACR_MP.schema names those fields with the same layout,
+        so `ACB.with_placeholders_filled(ACR)` is the schema that actually
+        matches retail ACB data -- verified by fastload.py round-tripping
+        every object of the ACB MtStMichel/Alhambra maps."""
+        s = Schema.__new__(Schema)
+        s.game_info = self.game_info
+        s.global_enums_by_hash = dict(self.global_enums_by_hash)
+        s.names = dict(donor.names)
+        s.names.update(self.names)
+        s.types_by_hash = dict(self.types_by_hash)
+        for h, t in self.types_by_hash.items():
+            if any(p.name_hash == 0 for p in t.properties) and h in donor.types_by_hash:
+                s.types_by_hash[h] = donor.types_by_hash[h]
+        for h, t in donor.types_by_hash.items():
+            s.types_by_hash.setdefault(h, t)
+        return s
+
     @classmethod
     def load_default(cls, game: Game) -> "Schema":
         """Loads the .schema file bundled with this package for `game`,
