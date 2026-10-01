@@ -204,7 +204,8 @@ def _write_header_modern(bw: BinaryIO, entries_count: int, fileset_count: int) -
 
 
 def repack(
-    in_dir: str, forge_path: str, game: Game, original_entries: list[ForgeEntry] | None = None
+    in_dir: str, forge_path: str, game: Game, original_entries: list[ForgeEntry] | None = None,
+    align_entries: bool = False,
 ) -> None:
     """Builds a .forge file from a folder of loose .data/.MetaFile/.PrefetchInfo
     files, deriving each entry's ID/extension from its own content (matching
@@ -218,7 +219,11 @@ def repack(
     every entry that already existed. Without this, replace.py's per-forge
     round trip would silently reset that metadata for every entry in the
     forge, not just the one it meant to touch -- confirmed to cause real,
-    in-game crashes even with zero content changes."""
+    in-game crashes even with zero content changes.
+
+    `align_entries` (legacy forges only) places entries the way retail forges
+    do, so no entry header straddles a streaming chunk -- see
+    fileset._engine_safe_offset. Needed whenever entries are added or resized."""
     version = forge_version(game)
     legacy = is_legacy(game)
 
@@ -230,7 +235,7 @@ def repack(
             _write_header_legacy(bw, len(entries), len(filesets))
             offsets = [1086 + i * _LEGACY_FILESET_STRIDE for i in range(len(filesets))] + [-1]
             for i, fs in enumerate(filesets):
-                write_fileset_legacy(bw, fs, i, len(filesets), offsets[i])
+                write_fileset_legacy(bw, fs, i, len(filesets), offsets[i], align_entries)
                 bw.seek(1024, 1)
             round_to = _LEGACY_ROUND_UP
         else:

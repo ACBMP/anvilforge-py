@@ -28,6 +28,7 @@ from .sanitize import sanitize_entry_name
 LEGACY_DATA_HEADER_SIZE = 440
 _LEGACY_DATA_BASE = 820_000
 _MODERN_DATA_BASE = 880_000
+_STREAM_CHUNK = 0x8000
 
 
 def _u32(f: BinaryIO) -> int:
@@ -194,12 +195,33 @@ def read_fileset(
     return entries, next_fileset_ptr
 
 
+def _engine_safe_offset(cursor: int, dep_table_size: int) -> int:
+    """Next offset >= cursor at which an entry can start without its FILEDATA
+    header + .data dependency table crossing a streaming-chunk boundary.
+
+    The engine (scimitar::BigFileAsynchStream::HandleChunkPrefetches) streams a
+    forge in chunks aligned to 0x8000 and reads each entry's dependency table
+    in place from the chunk buffer that holds the entry's *start*; a table
+    that runs past the chunk end is read from unrelated memory and crashes.
+    Retail forges keep entries 16-aligned and never straddle."""
+    off = (cursor + 15) & ~15
+    end = off + LEGACY_DATA_HEADER_SIZE + dep_table_size
+    if off // _STREAM_CHUNK != (end - 1) // _STREAM_CHUNK:
+        off = (end - 1) // _STREAM_CHUNK * _STREAM_CHUNK
+    return off
+
+
 def write_fileset_legacy(
-    bw: BinaryIO, entries: list[ForgeEntry], set_index: int, filesets_count: int, offset: int
+    bw: BinaryIO, entries: list[ForgeEntry], set_index: int, filesets_count: int, offset: int,
+    align_entries: bool = False,
 ) -> int:
     """Port of FileSet.WriteToFile25. Mutates entry.offset to the final
     absolute value (matching the original, which does the same on the
-    in-memory ForgeEntry objects)."""
+    in-memory ForgeEntry objects).
+
+    align_entries: lay entries out like retail forges (see
+    _engine_safe_offset) instead of back to back. Off by default to keep the
+    original tool's byte-exact output; turn it on for forges the game loads."""
     bw.seek(offset)
     position1 = bw.tell()
     num1 = set_index * ENTRIES_PER_FILESET
@@ -217,6 +239,14 @@ def write_fileset_legacy(
     _wi64(bw, num3)
     num4 = num3 + _LEGACY_DATA_BASE
     position2 = bw.tell()
+
+    if align_entries and entries:
+        cursor = entries[0].offset + num4
+        for entry in entries:
+            with open(entry.name, "rb") as src:
+                deps = int.from_bytes(src.read(4), "little")
+            entry.offset = _engine_safe_offset(cursor, 4 + 8 * deps) - num4
+            cursor = entry.offset + num4 + LEGACY_DATA_HEADER_SIZE + entry.length_on_disk
 
     for index, entry in enumerate(entries):
         entry.offset += num4
