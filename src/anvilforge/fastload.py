@@ -238,6 +238,11 @@ class Codec:
             n = count if kind == Kind.STATIC_ARRAY else self._u32(f, path)
             if n > 10_000_000:
                 raise DecodeError(f"bad array count {n}", f.tell(), path)
+            if elem == Kind.BOOL or elem in PRIMITIVE_SIZE or elem in (Kind.ENUM, Kind.OBJECT_ID):
+                # fixed-size elements (vertex/index buffers etc.): one bulk read instead of n calls
+                w = 4 if elem in (Kind.ENUM, Kind.OBJECT_ID) else PRIMITIVE_SIZE.get(elem, 1)
+                b = self._read(f, n * w, path)
+                return [b[i:i + w] for i in range(0, n * w, w)]
             return [self._value(f, elem, 0, 0, oh, f"{path}[{i}]") for i in range(n)]
         raise DecodeError(f"unhandled kind {kind}", f.tell(), path)
 

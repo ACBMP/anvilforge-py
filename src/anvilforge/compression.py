@@ -11,16 +11,34 @@ doesn't target (Unity onward).
 from __future__ import annotations
 
 import ctypes
+import os
+import sys
 import ctypes.util
 
 _lzo = None
 
 
+def _find_lzo() -> str:
+    """liblzo2 location: $ANVILFORGE_LZO, else a copy next to this package (e.g. bundled in a Blender add-on zip),
+    else the system library."""
+    env = os.environ.get("ANVILFORGE_LZO")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("lzo2.dll", "liblzo2-2.dll", "liblzo2.so.2", "liblzo2.so", "liblzo2.2.dylib", "liblzo2.dylib"):
+        for d in (here, os.path.dirname(here)):
+            if os.path.exists(os.path.join(d, name)):
+                return os.path.join(d, name)
+    found = ctypes.util.find_library("lzo2")
+    if found:
+        return found
+    return {"win32": "lzo2.dll", "darwin": "liblzo2.dylib"}.get(sys.platform, "liblzo2.so.2")
+
+
 def _lzo_lib():
     global _lzo
     if _lzo is None:
-        path = ctypes.util.find_library("lzo2") or "liblzo2.so.2"
-        lib = ctypes.CDLL(path)
+        lib = ctypes.CDLL(_find_lzo())
         lib.__lzo_init_v2.restype = ctypes.c_int
         if lib.__lzo_init_v2(1, -1, -1, -1, -1, -1, -1, -1, -1, -1) != 0:
             raise RuntimeError("failed to initialize liblzo2")
