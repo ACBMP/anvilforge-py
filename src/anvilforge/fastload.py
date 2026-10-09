@@ -32,8 +32,11 @@ maps to exactly their byte length. The rules:
   descriptor(8) value`` (value encoded by the generic per-kind rules, where an
   OBJECT_PTR is a bare 4-byte id).
 
-Anything else (compiled animation tracks, FX code tables, NavMesh triangle
-blobs, compiled shader permutations, and a few cinematic components --
+- A few classes append a hand-written tail (their CustomSerializeFastLoad) after
+  their properties; CUSTOM_TAILS reads and writes those (NavMeshTriangle,
+  WayPoint, ObjectWayPoint: the navmesh), kept in ``Obj.custom``.
+
+Anything else (compiled animation tracks, FX code tables, compiled shader permutations, and a few cinematic components --
 Scene clips, SceneSpawner, CameraRuleBook, MultiInertComponent -- seen only in
 the Whiteroom lobby map) uses hand-written serializers these rules don't cover;
 decode() raises DecodeError for those and callers should treat the payload as
@@ -66,6 +69,61 @@ DYNAMIC_PROPERTY_CLASSES = frozenset({
 })
 
 
+def _u16s(b: bytes) -> list[int]:
+    return [int.from_bytes(b[i:i + 2], "little") for i in range(0, len(b), 2)]
+
+
+def _pack_u16s(v) -> bytes:
+    return b"".join(int(x).to_bytes(2, "little") for x in v)
+
+
+def _tail_navmesh_triangle(read):
+    """NavMeshTriangle::CustomSerializeFastLoad (Mac 0x0062c450): four u8 counts, then that many u16 in total."""
+    counts = read(4)
+    return {"counts": list(counts), "data": _u16s(read(2 * sum(counts)))}
+
+
+def _enc_navmesh_triangle(c) -> bytes:
+    return bytes(c["counts"]) + _pack_u16s(c["data"])
+
+
+WAYPOINT_WORDS = ("Flags", "Bits", "TriangleIndex", "X", "Y", "Z", "ManagerIndex")
+
+
+def _tail_waypoint(read):
+    """WayPoint::CustomSerializeFastLoad (Mac 0x0085e3d0): u8 link count, links as (u16, u16), then seven u16:
+    flags (low 4 bits), bits (12 bits), triangle index, x and y (10-bit steps across the manager's cell), z (half
+    float), manager index."""
+    n = read(1)[0]
+    links = _u16s(read(4 * n))
+    out = {"Links": [tuple(links[i:i + 2]) for i in range(0, len(links), 2)]}
+    out.update(zip(WAYPOINT_WORDS, _u16s(read(14))))
+    return out
+
+
+def _enc_waypoint(c) -> bytes:
+    return (bytes([len(c["Links"])]) + _pack_u16s([x for l in c["Links"] for x in l])
+            + _pack_u16s(c[k] for k in WAYPOINT_WORDS))
+
+
+def _tail_links(read):
+    """ObjectWayPoint::CustomSerializeFastLoad (Mac 0x0062d890): u8 count, then that many (u16, u16) links."""
+    links = _u16s(read(4 * read(1)[0]))
+    return [tuple(links[i:i + 2]) for i in range(0, len(links), 2)]
+
+
+def _enc_links(c) -> bytes:
+    return bytes([len(c)]) + _pack_u16s([x for l in c for x in l])
+
+
+# class name -> (read tail via read(n) -> value, encode value -> bytes)
+CUSTOM_TAILS = {
+    "NavMeshTriangle": (_tail_navmesh_triangle, _enc_navmesh_triangle),
+    "WayPoint": (_tail_waypoint, _enc_waypoint),
+    "ObjectWayPoint": (_tail_links, _enc_links),
+}
+
+
 class DecodeError(Exception):
     def __init__(self, msg: str, pos: int = -1, path: str = "") -> None:
         super().__init__(f"{msg} at {pos} ({path})")
@@ -83,6 +141,7 @@ class Obj:
     fields: dict[str, Any] = field(default_factory=dict)
     flag: int | None = None  # ManagedObject flag byte, when present
     dyn: list[tuple[int, int, int, Any]] | None = None  # (name, obj_hash, type_bits, value)
+    custom: Any = None  # hand-written tail (CUSTOM_TAILS), when the class has one
 
 
 @dataclass
@@ -185,6 +244,8 @@ class Codec:
                                              f"{path}.{nm}")
             if cname in DYNAMIC_PROPERTY_CLASSES:
                 obj.dyn = self._dyn(f, f"{path}._dyn")
+            if cname in CUSTOM_TAILS:
+                obj.custom = CUSTOM_TAILS[cname][0](lambda n: self._read(f, n, f"{path}._custom"))
         return obj
 
     def _inline(self, f: io.BytesIO, declared: int, path: str, with_flag: bool) -> Obj:
@@ -282,6 +343,8 @@ class Codec:
                 self._enc_value(out, p.kind, p.elem_kind, p.object_hash, obj.fields[nm], f"{path}.{nm}")
             if cname in DYNAMIC_PROPERTY_CLASSES:
                 self._enc_dyn(out, obj.dyn or [], f"{path}._dyn")
+            if cname in CUSTOM_TAILS:
+                out.write(CUSTOM_TAILS[cname][1](obj.custom))
 
     def _enc_inline(self, out, obj: Obj, oh: int, with_flag: bool, path: str) -> None:
         if with_flag:
